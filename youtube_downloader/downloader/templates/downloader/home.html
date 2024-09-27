@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block content %}
+<div class="container mt-4">
+    <form id="download-form" class="mb-4">
+        {% csrf_token %}
+        <div class="row g-2">
+            <div class="col-md-8">
+                <input type="text" id="url-input" class="form-control" placeholder="Place a link">
+            </div>
+            <div class="col-md-2">
+                <select id="quality-select" class="form-select">
+                    <option value="720p">720p</option>
+                    <option value="1080p">1080p</option>
+                    <option value="audio">Audio</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" id="download-btn" class="btn btn-primary w-100">Download</button>
+            </div>
+        </div>
+    </form>
+
+    <div id="playlist-preview" class="mb-4 p-3 bg-dark rounded">
+        <h5>Preview</h5>
+        <p id="playlist-info"></p>
+    </div>
+
+    <div id="video-list-container" class="d-none">
+        <div class="mb-2">
+            <h5>Small details of the playlist</h5>
+            <p id="playlist-details"></p>
+        </div>
+        <div class="mb-2">
+            <!-- <button id="deselect-all" class="btn btn-secondary">Select all</button> -->
+            <button id="deselect-all" class="btn btn-secondary">Deselect all</button>
+            <button id="download-all" class="btn btn-primary">Download all</button>
+            <button id="download-selected" class="btn btn-primary">Download Selected</button>
+        </div>
+        <div id="video-list" style="max-height: 400px; overflow-y: auto;">
+            <!-- Videos will be dynamically added here -->
+        </div>
+    </div>
+</div>
+{% endblock %}
