@@ -17,7 +17,6 @@ body {
 .form-control:focus,
 .form-select:focus {
     background-color: #2c2c2c;
-    color: #ffffff;
     border-color: #5c5c5c;
     box-shadow: 0 0 0 0.25rem rgba(92, 92, 92, 0.25);
 }
@@ -32,12 +31,33 @@ body {
     border-color: #7040cc;
 }
 
-.btn-secondary {
-    background-color: #3c3c3c;
-    border-color: #3c3c3c;
+#video-list-container {
+    max-height: 500px;
+    overflow-y: scroll;
+    border: 1px solid #ccc;
+    padding: 10px;
+}
+#video-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
 }
 
-.btn-secondary:hover {
-    background-color: #2c2c2c;
-    border-color: #2c2c2c;
+#video-list li {
+    margin-bottom: 10px;
+}
+
+#video-list ul {
+    list-style: disc;
+    padding-left: 20px;
+}
+
+#video-list li::before {
+    content: "";
+    width: 10px;
+    height: 10px;
+    display: inline-block;
+    background-color: #8c52ff;
+    border-radius: 50%;
+    margin-right: 10px;
 }

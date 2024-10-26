@@ -1,111 +1,132 @@
-
 import yt_dlp
-import json
 import tempfile
 import os
+import requests
 from django.shortcuts import render
-from django.http import JsonResponse, StreamingHttpResponse
-from django.views.decorators.csrf import ensure_csrf_cookie
-from django.conf import settings
-from .models import Playlist, Video
+from django.http import JsonResponse, StreamingHttpResponse, FileResponse
+from django.views.decorators.csrf import ensure_csrf_cookie, csrf_exempt
+from .models import Playlist
+import mimetypes
+import logging
+import certifi
+
+logger = logging.getLogger('downloader')
 
 
 @ensure_csrf_cookie
 def home(request):
+    """Renders the homepage with the playlist URL form."""
     return render(request, 'downloader/home.html')
 
 
-def fetch_playlist(request):
-    if request.method == 'POST':
-        url = request.POST.get('url')
-        quality = request.POST.get('quality', '720p')
-
+def get_available_formats(video_url):
+    """Fetches available video formats for a given URL using yt-dlp."""
+    formats = []
+    try:
         ydl_opts = {
-            'extract_flat': 'in_playlist',
-            'skip_download': True,
+            'quiet': True,
+            'format': 'bestvideo[height>=720]+bestaudio/best',
+            'listformats': True
         }
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-
-            playlist = Playlist.objects.create(
-                url=url,
-                title=info['title'],
-                description=info.get('description', '')
-            )
-
-            videos = []
-            for entry in info['entries']:
-                video = Video.objects.create(
-                    playlist=playlist,
-                    title=entry['title'],
-                    url=entry['url']
-                )
-                videos.append({'id': video.id, 'title': video.title})
-
-            return JsonResponse({
-                'playlist_id': playlist.id,
-                'title': playlist.title,
-                'video_count': len(videos),
-                'videos': videos
-            })
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=400)
-
-    return JsonResponse({'error': 'Invalid request'}, status=400)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            result = ydl.extract_info(video_url, download=False)
+            formats = [f for f in result.get('formats', [])
+                       if f.get('height') and f.get('height') >= 720 and f.get('ext') != 'm4a']
+    except Exception as e:
+        logger.error(f"Error fetching formats: {e}")
+    return formats
 
 
-def playlist_detail(request, pk):
-    playlist = Playlist.objects.get(pk=pk)
-    return render(request, 'downloader/playlist_detail.html', {'playlist': playlist})
+def get_hls_stream(video_url):
+    """Attempts to get an HLS stream URL (m3u8) for a video."""
+    try:
+        with yt_dlp.YoutubeDL({'format': 'best[ext=m3u8]', 'noplaylist': True, 'skip_download': True}) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            return next((fmt['url'] for fmt in info.get('formats', []) if fmt.get('ext') == 'm3u8'), None)
+    except Exception as e:
+        logger.error(f"Error extracting HLS stream: {e}")
+        return None
 
 
+def fetch_playlist(request):
+    playlist_url = request.GET.get('url')
+    videos_info = []
+    try:
+        ydl_opts = {
+            'format': 'bestvideo[height=720]+bestaudio/best',
+            'verbose': True  # Enable verbose output for debugging
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            playlist_info = ydl.extract_info(playlist_url, download=False)
+            for video in playlist_info['entries']:
+                try:
+                    video_info = ydl.extract_info(video['url'], download=False)
+                    videos_info.append({
+                        'title': video['title'],
+                        'url': video['url'],
+                        'stream_url': video_info['url'] if 'url' in video_info else ''
+                    })
+                except Exception as e:
+                    videos_info.append({
+                        'title': video['title'],
+                        'url': video['url'],
+                        'error': str(e)
+                    })
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+    return JsonResponse({'videos': videos_info})
+
+
+@csrf_exempt
 def download_videos(request, pk):
-    if request.method == 'POST':
+    """Streams videos from a playlist based on user-selected format."""
+    logger.info(f"download_videos called with pk: {pk}")
+    if request.method == 'GET':
         playlist = Playlist.objects.get(pk=pk)
-        download_type = request.POST.get('type')
-        selected_videos = request.POST.get('videos')
+        download_type = request.GET.get('type')
+        selected_videos = request.GET.get('videos')
+        quality = request.GET.get('quality', '720p')
 
-        if download_type == 'all':
-            videos = playlist.videos.all()
-        else:
-            video_ids = selected_videos.split(',')
-            videos = playlist.videos.filter(id__in=video_ids)
+        videos = playlist.videos.all() if download_type == 'all' else playlist.videos.filter(
+            id__in=selected_videos.split(','))
+
+        def stream_video(video_url, ydl_opts):
+            """Streams video data to the client."""
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(video_url, download=False)
+                    video_stream_url = info.get('url')
+                    if video_stream_url:
+                        with requests.get(video_stream_url, stream=True) as r:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                yield chunk
+            except Exception as e:
+                logger.error(f"Error streaming video: {str(e)}")
 
         def event_stream():
-            with tempfile.TemporaryDirectory() as temp_dir:
+            """Yields each video stream one by one."""
+            for video in videos:
                 ydl_opts = {
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                    'format': f'bestaudio/best' if quality == 'audio' else f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]',
+                    'socket_timeout': 10,
+                    'ssl_cert_file': certifi.where(),
                 }
+                yield from stream_video(video.url, ydl_opts)
 
-                try:
-                    for video in videos:
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            ydl.download([video.url])
-
-                        # Assume only one file is downloaded
-                        filename = os.listdir(temp_dir)[0]
-                        filepath = os.path.join(temp_dir, filename)
-
-                        with open(filepath, 'rb') as file:
-                            file_content = file.read()
-
-                        yield f"data: {json.dumps({'filename': filename, 'content': file_content.decode('latin-1')})}\n\n"
-
-                        os.remove(filepath)  # Remove the file after sending
-
-                except Exception as e:
-                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-                yield "data: {}\n\n"  # End of stream
-
-        return StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+        return StreamingHttpResponse(event_stream(), content_type='application/octet-stream')
 
     return JsonResponse({'error': 'Invalid request'}, status=400)
+
+
+def download_file(request, filename):
+    """Handles file download from server's temporary directory."""
+    file_path = os.path.join(tempfile.gettempdir(), filename)
+    if os.path.exists(file_path):
+        with open(file_path, 'rb') as file:
+            response = FileResponse(
+                file, content_type=mimetypes.guess_type(file_path)[0])
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            return response
+    else:
+        return JsonResponse({'error': 'File not found'}, status=404)
